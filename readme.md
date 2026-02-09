@@ -1,8 +1,8 @@
-# Dissecting Alzheimer’s Disease Genetic Variants with Fine-Tuned 3D DNA Foundation Models
+# iNeuroAkita: a neuronal and microglial fine-tuned three-dimensional DNA model of the structural consequences of genetic variants in Alzheimer’s disease
 
 A comprehensive pipeline for training, predicting, and analyzing 3D genome structures by fine-tuning Akita model and evaluating the impact of sequence mutations on chromatin architecture.
 
-image.png
+![Schematic overview of this study](figures/fig1.png)
 
 ## Overview
 
@@ -82,12 +82,12 @@ Use `akita_data.py` to prepare training data:
 
 ```bash
 akita_data.py \
-  -g /path/to/ref_data/gaps_binsize2048_numconseq10.bed \
+  -g /path/to/ref_data/hg38_gaps_binsize2048_numconseq10.bed \
   -l 1048576 \
   --crop 65536 \
   --local \
   -o model_input/NPC_data \
-  -b /path/to/ref_data/blacklist.bed \
+  -b /path/to/ref_data/hg38-blacklist.v2_processed.bed \
   --as_obsexp \
   -p 8 \
   -k 1 \
