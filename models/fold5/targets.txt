@@ -1,0 +1,4 @@
+index	identifier	file	clip	sum_stat	description
+0	NPC_P16	coolers/NPC_P16.hg38.mapq_30.2048.cool	2	sum	NPC_P16
+1	Mic_AD	coolers/Mic_AD.hg38.mapq_30.2048.cool	2	sum	Mic_AD
+2	Neuron_P16	coolers/Neuron_P16.hg38.mapq_30.2048.cool	2	sum	Neuron_P16

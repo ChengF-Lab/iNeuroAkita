@@ -1,0 +1,488 @@
+diff --git a/scripts/SuPreMo.py b/scripts/SuPreMo.py
+index 2e64d0d..6b0a852 100755
+--- a/scripts/SuPreMo.py
++++ b/scripts/SuPreMo.py
+@@ -213,7 +213,7 @@ Method(s) used to calculate disruption scores. Use abbreviations as follows:
+     pca: Principal component method.
+ ''', 
+                     type = str,
+-                    choices = ['mse', 'corr',  'ssi', 'scc', 'ins',  'di', 'dec', 'tri', 'pca'],
++                    choices = ['mse', 'corr',  'ssi', 'scc', 'ins',  'di', 'dec', 'tri', 'pca', 'maxabs', 'l1'],
+                     default = ['mse', 'corr'],
+                     required = False)
+ 
+diff --git a/scripts/get_Akita_scores_utils.py b/scripts/get_Akita_scores_utils.py
+index 117397f..f3d2931 100755
+--- a/scripts/get_Akita_scores_utils.py
++++ b/scripts/get_Akita_scores_utils.py
+@@ -61,8 +61,9 @@ roi_scales = None
+ # This file path and model path
+ repo_path = Path(__file__).parents[1]
+ 
+-model_file  = f'{repo_path}/Akita_model/model_best.h5'
+-params_file = f'{repo_path}/Akita_model/params.json'
++model_dir   = os.environ.get('SUPREMO_MODEL_DIR', f'{repo_path}/Akita_model')
++model_file  = f'{model_dir}/model_best.h5'
++params_file = f'{model_dir}/params.json'
+ 
+ 
+ with open(params_file) as params_open:
+@@ -136,6 +137,13 @@ class scoring_map_methods:
+     
+     def scc(self): # stratum adjusted correlation
+         return scoring.scc(self.map_a, self.map_b)
++
++    # [A4 patch 2026-11-02] components of the original manuscript's score (MUT - WT map)
++    def maxabs(self): # maximum absolute difference
++        return float(np.nanmax(np.abs(self.map_a - self.map_b)))
++
++    def l1(self): # mean absolute difference
++        return float(np.nanmean(np.abs(self.map_a - self.map_b)))
+     
+     
+     # Map-motivated methods
+@@ -361,10 +369,9 @@ def vector_from_seq(seq, Akita_cell_types):
+         sequences = layers.EnsembleShift(ensemble_shifts)(sequences)
+     sequences
+ 
+-    pred_targets = []
+-    for cell_type in Akita_cell_types:
+-        pred_targets_i = seqnn_model.predict(np.expand_dims(seq_1hot,0), verbose=0)[0,:,Akita_cell_type_dict[cell_type]]    
+-        pred_targets.append(pred_targets_i)
++    # [A4 patch 2026-11-02] predict once, then take each requested head
++    pred_all = seqnn_model.predict(np.expand_dims(seq_1hot,0), verbose=0)[0]
++    pred_targets = [pred_all[:, Akita_cell_type_dict[cell_type]] for cell_type in Akita_cell_types]
+ 
+     return pred_targets
+ 
+@@ -629,10 +636,9 @@ def get_scores(CHR, POS, SVTYPE, SVLEN, sequences, scores, shift, revcomp,
+     
+     for i in range(len(Akita_cell_types)):
+         
+-        if len(Akita_cell_types) == 1:
+-            matrices = [map_from_vector(vector) for vector in vectors]
+-        else:
+-            matrices = [map_from_vector(vector) for vector in vectors[i]]
++        # [A4 patch 2026-11-02] original indexed vectors[i] (= i-th sequence, not i-th head),
++        # which fails with >2 cell types; take head i of every sequence instead
++        matrices = [map_from_vector(vector[i]) for vector in vectors]
+         
+     
+         if revcomp:
+diff --git a/scripts/plotting_utils.py b/scripts/plotting_utils.py
+index c01601c..7d8e671 100755
+--- a/scripts/plotting_utils.py
++++ b/scripts/plotting_utils.py
+@@ -20,7 +20,7 @@ from pybedtools import BedTool
+ import itertools
+ 
+ from pathlib import Path
+-
++import matplotlib.patches as patches
+ 
+ 
+ # Get Akita measurements (specified in get_Akita_scores_utils)
+@@ -41,11 +41,11 @@ repo_path = Path(__file__).parents[1]
+ # Get gene coordinates, protein coding for hg38 and all for hg19 (remove ones with versions, ex AC233755.2)
+ gene_annot_hg38 = pd.read_csv(f'{repo_path}/data/gene_annot_hg38', sep = ',')
+ gene_annot_hg38 = gene_annot_hg38[['.' not in x for x in gene_annot_hg38.gene]]
+-gene_annot_hg38_BED = BedTool.from_dataframe(gene_annot_hg38[['chr', 'start', 'end', 'gene']])
++gene_annot_hg38_BED = BedTool.from_dataframe(gene_annot_hg38[['chr', 'start', 'end', 'gene','strand']])
+ 
+ gene_annot_hg19 = pd.read_csv(f'{repo_path}/data/gene_annot_hg19', sep = ',')
+ gene_annot_hg19 = gene_annot_hg19[['.' not in x for x in gene_annot_hg19.gene]]
+-gene_annot_hg19_BED = BedTool.from_dataframe(gene_annot_hg19[['chr', 'start', 'end', 'gene']])
++gene_annot_hg19_BED = BedTool.from_dataframe(gene_annot_hg19[['chr', 'start', 'end', 'gene','strand']])
+ 
+ 
+ 
+@@ -82,11 +82,18 @@ def get_genes_in_map(CHR, map_start_coord, rel_pos_map, SVTYPE, SVLEN, genome =
+         genes_in_map = pd.DataFrame(columns=['Start', 'End', 'Gene', 'width'])
+ 
+     else:
+-        genes_in_map = (genes_in_map_BED
+-                        .to_dataframe()
+-                        .rename(columns = {'score': 'Start', 'strand':'End', 'thickStart':'Gene'})
+-                        [['Start', 'End', 'Gene']])
++        #genes_in_map = (genes_in_map_BED
++        #                .to_dataframe()
++        #                .rename(columns = {'score': 'Start', 'strand':'End', 'thickStart':'Gene'})
++        #                [['Start', 'End', 'Gene']])
+         
++        genes_in_map = (genes_in_map_BED
++                        .to_dataframe(names=[
++                        'map_chr', 'map_start', 'map_end',     # from map_region_BED
++                        'chr', 'Start', 'End', 'Gene', 'Strand'  # from gene_annot_BED
++                        ])
++                       [['Start', 'End', 'Gene', 'Strand']])  # keep only needed ones
++
+         genes_in_map.Start = [math.ceil(x/bin_size) for x in (genes_in_map.Start - map_start_coord)]
+         genes_in_map.loc[genes_in_map.Start < 0,'Start'] = 0
+         genes_in_map = genes_in_map[genes_in_map.Start <= 447]
+@@ -161,47 +168,133 @@ def get_var_bins(rel_pos_map, SVTYPE, SVLEN):
+     
+     
+     
+-def pcolormesh_45deg(plt, mat, lines, linewidth, *args, **kwargs):
++# def pcolormesh_45deg(ax, mat, lines, linewidth, *args, **kwargs):
+     
+-    '''
+-    Plot contact frequency maps as triangles (supplement to plot_maps_genes and plot_maps_genes_tracks).
++#     '''
++#     Plot contact frequency maps as triangles (supplement to plot_maps_genes and plot_maps_genes_tracks).
+     
+-    Parts of the code were adapted from https://github.com/pollardlab/contact_map_scoring/blob/main/code/utils.py.
++#     Parts of the code were adapted from https://github.com/pollardlab/contact_map_scoring/blob/main/code/utils.py.
+     
+-    '''
+-    n = mat.shape[0]
++#     '''
++#     n = mat.shape[0]
+     
+-    # Create rotation/scaling matrix
+-    t = np.array([[1,0.5],[-1,0.5]])
++#     # Create rotation/scaling matrix
++#     t = np.array([[1,0.5],[-1,0.5]])
+     
+-    # Create coordinate matrix and transform it
+-    A = np.dot(np.array([(i[1],i[0]) for i in itertools.product(range(n,-1,-1),range(0,n+1,1))]),t)
++#     # Create coordinate matrix and transform it
++#     A = np.dot(np.array([(i[1],i[0]) for i in itertools.product(range(n,-1,-1),range(0,n+1,1))]),t)
++    
++#     # Plot
++#     im = ax.pcolormesh(
++#             A[:,1].reshape(n+1,n+1),
++#             A[:,0].reshape(n+1,n+1),
++#             np.flipud(mat), 
++#             shading='auto',
++#             *args, **kwargs
++#             )
++    
++#     im.set_rasterized(True)
++#     # Plot dashed lines if provided
++#     if lines is not None:
++#         for line in lines:
++#             plt.plot([line,line + (n-line)/2], [0,n-line], color = 'gray', linewidth=linewidth, linestyle = 'dashed')
++#             plt.plot([line,line/2], [0,line], color = 'gray', linewidth=linewidth, linestyle = 'dashed')
++    
++    
++#     ax.plot([0, n/2], [0, n], 'k-',linewidth=1)
++#     ax.plot([n/2, n], [n, 0], 'k-',linewidth=1)
++#     ax.plot([0, n], [0, 0], 'k-',linewidth=1)
+     
+-    # Plot
+-    im = plt.pcolormesh(A[:,1].reshape(n+1,n+1),A[:,0].reshape(n+1,n+1),np.flipud(mat), *args, **kwargs)
++#     # Cleanup axis aesthetics
++#     ax.set_xlim(0,n)
++#     ax.set_ylim(0,n)
++#     ax.set_xticks([])
++#     ax.set_yticks([])
+     
++#     ax.spines['right'].set_visible(False)
++#     ax.spines['top'].set_visible(False)
++#     ax.spines['left'].set_visible(False)
++#     ax.set_rasterized(True)
++
++#     return im
++
++
++import numpy as np
++import itertools
++import matplotlib.pyplot as plt
++
++def pcolormesh_45deg(ax_or_plt, mat, lines=None, linewidth=0.8, *args, **kwargs):
++    """
++    Plot a contact map as a 45°-rotated triangular heatmap.
++
++    Parameters
++    ----------
++    ax_or_plt : matplotlib.axes.Axes or matplotlib.pyplot module or None
++        Target axes (preferred). If a pyplot module or None is given, uses plt.gca().
++    mat : np.ndarray (n x n)
++        Contact matrix.
++    lines : list[float] or None
++        Optional list of diagonal positions to overlay as dashed guides.
++    linewidth : float
++        Line width for guide lines.
++    *args, **kwargs :
++        Passed through to ax.pcolormesh (e.g., cmap='RdBu_r', vmin=..., vmax=...).
++
++    Returns
++    -------
++    im : QuadMesh
++        The pcolormesh artist.
++    ax : matplotlib.axes.Axes
++        The axes used for plotting.
++    """
++    # Resolve axes
++    ax = ax_or_plt
++    if ax is None or not hasattr(ax, "set_xlim"):
++        ax = plt.gca()
++
++    n = mat.shape[0]
++
++    # Rotation/scaling matrix and transformed coordinates
++    t = np.array([[1, 0.5], [-1, 0.5]])
++    A = np.dot(
++        np.array([(i[1], i[0]) for i in itertools.product(range(n, -1, -1), range(0, n + 1))]),
++        t
++    )
++
++    # Draw heatmap
++    im = ax.pcolormesh(
++        A[:, 1].reshape(n + 1, n + 1),
++        A[:, 0].reshape(n + 1, n + 1),
++        np.flipud(mat),
++        shading="auto",
++        *args, **kwargs
++    )
+     im.set_rasterized(True)
++
++    # Optional dashed guide lines (use ax.plot, not plt.plot)
+     if lines is not None:
+         for line in lines:
+-            plt.plot([line,line + (n-line)/2], [0,n-line], color = 'gray', linewidth=linewidth, linestyle = 'dashed')
+-            plt.plot([line,line/2], [0,line], color = 'gray', linewidth=linewidth, linestyle = 'dashed')
+-    plt.ylim(0,n)
+-    plt.xticks([])
+-    plt.yticks([])
+-    plt.plot([0, n/2], [0, n], 'k-',linewidth=1)
+-    plt.plot([n/2, n], [n, 0], 'k-',linewidth=1)
+-    plt.plot([0, n], [0, 0], 'k-',linewidth=1)
+-    plt.xlim([0,n])
+-
+-    ax = plt.gca()
+-    ax.spines['right'].set_visible(False)
+-    ax.spines['top'].set_visible(False)
+-    ax.spines['left'].set_visible(False)
++            ax.plot([line, line + (n - line) / 2], [0, n - line],
++                    color="gray", linewidth=linewidth, linestyle="dashed")
++            ax.plot([line, line / 2], [0, line],
++                    color="gray", linewidth=linewidth, linestyle="dashed")
++
++    # Frame lines
++    ax.plot([0, n / 2], [0, n], "k-", linewidth=1)
++    ax.plot([n / 2, n], [n, 0], "k-", linewidth=1)
++    ax.plot([0, n], [0, 0], "k-", linewidth=1)
++
++    # Aesthetics
++    ax.set_xlim(0, n)
++    ax.set_ylim(0, n)
++    ax.set_xticks([])
++    ax.set_yticks([])
++    ax.spines["right"].set_visible(False)
++    ax.spines["top"].set_visible(False)
++    ax.spines["left"].set_visible(False)
+     ax.set_rasterized(True)
+ 
+-    return im
+-
+-
++    return im, ax
+ 
+ 
+ # # # # # # # # # # # # # # # # # # 
+@@ -511,6 +604,7 @@ def plot_maps_genes_tracks_nonames(maps, genes_in_map, lines, disruption_track,
+     gene_track = list(genes_in_map[['Start', 'width']].to_records(index = False))
+     
+     n = maps[0].shape[0]
++    #n = maps[map_id][0].shape[0]
+     # create rotation/scaling matrix
+     t = np.array([[1,0.5],[-1,0.5]])
+     # create coordinate matrix and transform it
+@@ -561,7 +655,7 @@ def plot_maps_genes_tracks_nonames(maps, genes_in_map, lines, disruption_track,
+     plt.xlim([0,448])
+     plt.axis('off')
+ 
+-    plt.show()
++   # plt.show()
+ 
+ 
+ 
+@@ -582,6 +676,7 @@ def plot_maps_roi(maps, genes_in_map, lines, roi_in_map, disruption_track, weigh
+     roi_track = list(roi_in_map[['Start', 'width']].to_records(index = False))
+     
+     n = maps[0].shape[0]
++    #n = maps[map_id][0].shape[0]
+     # create rotation/scaling matrix
+     t = np.array([[1,0.5],[-1,0.5]])
+     # create coordinate matrix and transform it
+@@ -600,7 +695,6 @@ def plot_maps_roi(maps, genes_in_map, lines, roi_in_map, disruption_track, weigh
+         
+         plt.subplot(gs[i*2,0])
+         pcolormesh_45deg(plt, maps[i], lines, linewidth, cmap= 'RdBu_r', vmax=2, vmin=-2)
+-        
+     plt.subplot(gs[4,0])
+     pcolormesh_45deg(plt, maps[0] - maps[1], lines, linewidth, cmap= 'PRGn', vmax=1, vmin=-1)
+         
+@@ -687,5 +781,169 @@ def plot_maps_roi(maps, genes_in_map, lines, roi_in_map, disruption_track, weigh
+     
+     
+ 
+-    
++def plot_gene_locus(genes_in_map, scale=1, ax=None):
++    if ax is None:
++        fig, ax = plt.subplots(figsize=(12, 2 + len(genes_in_map) * 0.3))  # create new figure if not provided
++        show_plot = True
++    else:
++        fig = plt.gcf()  # get current figure
++        show_plot = False
++
++    for idx, row in genes_in_map.iterrows():
++        start = row['Start']
++        end = row['End']
++        gene = row['Gene']
++        strand = row['Strand']
++        width = end - start
++
++        y = idx + 1  # vertical position per gene
++        arrow_len = max(width * 0.05, 1)  # ensure arrow head is visible
++        body_color = 'darkblue'
++
++        # Draw gene body as arrow
++        if strand == '+':
++            arrow = patches.FancyArrow(start, y, width, 0,
++                                       width=0.1, head_width=0.6,
++                                       head_length=arrow_len, length_includes_head=True,
++                                       color=body_color)
++            tss_pos = start
++        else:
++            arrow = patches.FancyArrow(end, y, -width, 0,
++                                       width=0.1, head_width=0.6,
++                                       head_length=arrow_len, length_includes_head=True,
++                                       color=body_color)
++            tss_pos = end
++
++        ax.add_patch(arrow)
++
++        # Draw TSS as rectangle
++        tss_marker = patches.Rectangle((tss_pos - 0.5, y - 0.25), 1.0, 0.5,
++                                       color='indigo', label='TSS' if idx == 0 else "")
++        ax.add_patch(tss_marker)
++
++        # Add gene name
++        ax.text((start + end) / 2, y + 0.4, gene, ha='center', fontsize=10 * scale, family='Arial')
++
++    ax.set_ylim(0, len(genes_in_map) + 2)
++    ax.set_xlim(0, 448)
++    ax.set_yticks([])
++    ax.set_xlabel("Genomic Bin Position")
++    ax.set_title("Gene Locus Structure with TSS and Direction")
++
++    # Avoid duplicate legend entries
++    # handles, labels = ax.get_legend_handles_labels()
++    # if handles and labels:
++    #     seen = set()
++    #     filtered = [(h, l) for h, l in zip(handles, labels) if not (l in seen or seen.add(l))]
++    #     if filtered:
++    #         ax.legend(*zip(*filtered), loc='upper right', fontsize=9)
++
++    #plt.tight_layout()
++
++    if show_plot:
++        plt.show()    
++    
++
++def plot_maps_genes_tracks_test(maps, genes_in_map, lines, disruption_track, scale = 1, gene_rows = 3):
++
++    '''
++    Plot the reference and alternate predicted contact frequency maps with lines at the beginning and end of the variant. For duplications, there will be 3 lines marking the two regions that are duplicates.
++
++    Plot genes that match the regions in the reference map.
++
++    Plot disruption score tracks.
++
++    scale allows you to scale the size of the figure.
++
++    gene_rows allows you to specify the number of rows to plot genes on.
++
++    '''
++
++    gene_track = list(genes_in_map[['Start', 'width']].to_records(index = False))
++    n = maps[0].shape[0]
++
++    linestyle = 'dashed'
++    linewidth = 1.5 * scale
++    plot_width = 2 * scale
++    plot_width1D = 1 * scale
++    fig_width   = plot_width * 2
++
++
++    #fig = plt.figure(figsize=(8 * scale, sum(height_ratios) * scale), constrained_layout=True)
++    # Define 9 height segments for 9 rows
++    
++    import math
++    triangle_height = plot_width * 0.9
++    height_ratios = [
++        triangle_height,0.1,   # REF map
++        triangle_height,0.1,  # ALT map
++        triangle_height,0.1,   # Diff map
++        plot_width1D * 1.0, # Disruption
++        0.2,                # space
++        plot_width1D * 1.2 * gene_rows / 3  # Gene locus
++        ]
++    
++    #fig = plt.figure(figsize=(8 * scale, sum(height_ratios) * scale), constrained_layout=True)
++    # Must match 9 rows
++    assert len(height_ratios) == 9, "Height ratios do not match GridSpec nrows!"
++    
++    fig = plt.figure(
++        figsize=(fig_width, sum(height_ratios)),   # 4×scale  by  (row‑sum)
++        dpi=300,
++        constrained_layout=True)
++
++    gs = gridspec.GridSpec(
++            nrows=9,
++            ncols=1,
++            height_ratios=height_ratios,
++            figure=fig
++            )
++
++
++    # Plot REF map
++    ax_ref = fig.add_subplot(gs[0, 0])
++    im_ref = pcolormesh_45deg(ax_ref, maps[0], lines, linewidth, cmap='RdBu_r', vmin=-2, vmax=2)
++    #ax_ref.set_title("WT Contact Map")
++    ax_ref.text(1.05, 0.5, "WT Contact Map", transform=ax_ref.transAxes,
++            fontsize=10, va='center', ha='left', rotation=270)
++    #fig.colorbar(im_ref, ax=ax_ref, fraction=0.04, pad=0.04, label="Log Contact Frequency")
++    fig.colorbar(im_ref, ax=ax_ref, fraction=0.04, pad=0.04)
++
++    # Plot ALT map
++    ax_alt = fig.add_subplot(gs[2, 0])
++    im_alt = pcolormesh_45deg(ax_alt, maps[1], lines, linewidth, cmap='RdBu_r', vmin=-2, vmax=2)
++    #ax_alt.set_title("Mut Contact Map")
++    ax_alt.text(1.05, 0.5, "Mut Contact Map", transform=ax_alt.transAxes,
++            fontsize=10, va='center', ha='left', rotation=270)
++    #fig.colorbar(im_alt, ax=ax_alt, fraction=0.04, pad=0.04, label="Log Contact Frequency")
++    fig.colorbar(im_alt, ax=ax_alt, fraction=0.04, pad=0.04)
++
++    # Plot Difference map (REF - ALT)
++    ax_diff = fig.add_subplot(gs[4, 0])
++    im_diff = pcolormesh_45deg(ax_diff, maps[0] - maps[1], lines, linewidth, cmap='PRGn', vmin=-1, vmax=1)
++    #ax_diff.set_title("Difference Map (WT-Mut)")
++    ax_diff.text(1.05, 0.5, "Difference Map (WT-Mut)", transform=ax_diff.transAxes,
++            fontsize=10, va='center', ha='left', rotation=270)
++    #fig.colorbar(im_diff, ax=ax_diff, fraction=0.04, pad=0.04, label="Δ Contact Frequency")
++    fig.colorbar(im_diff, ax=ax_diff, fraction=0.04, pad=0.04)
++
++    # Plot disruption track
++    ax_track = fig.add_subplot(gs[6, 0])
++    ax_track.plot(range(len(disruption_track)), disruption_track, color='black', linewidth=linewidth)
++    ax_track.set_xlim([0, len(disruption_track)])
++    ax_track.yaxis.tick_right()
++    ax_track.set_xticks([])
++    ax_track.set_yticks([])
++    if lines is not None:
++        for line in lines:
++            ax_track.axvline(x=line, color='gray', linestyle=linestyle, linewidth=linewidth)
++    ax_track.set_title("Disruption Score Track")
++
++    # Plot gene locus
++    ax_genes = fig.add_subplot(gs[8, 0])
++    plot_gene_locus(genes_in_map, scale=scale, ax=ax_genes)
++    ax_genes.set_title("Gene Locus")
++
++    # Optional: Return fig to allow saving outside
++    return fig
+     

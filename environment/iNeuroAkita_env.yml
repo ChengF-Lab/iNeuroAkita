@@ -1,0 +1,25 @@
+# Environment for training, evaluation and the variant analyses (scripts/01-09).
+# basenji (akita_data.py, akita_train.py) is installed from GitHub on top of this env, see README.
+# Tested with Python 3.8 / TensorFlow 2.13.1 on CUDA 11.8 GPUs (training/prediction); the analysis scripts run on CPU.
+name: ineuroakita
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.8
+  - numpy
+  - pandas
+  - scipy
+  - matplotlib
+  - h5py
+  - pysam
+  - pybigwig
+  - pybedtools
+  - bedtools
+  - cooler
+  - openpyxl
+  - pip
+  - pip:
+      - tensorflow==2.13.1
+      - tensorboard
+      - adjustText

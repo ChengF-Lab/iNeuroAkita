@@ -1,0 +1,8 @@
+fold	test_chroms	valid_chroms
+fold1	chr10,chr17	chr8,chr9
+fold2	chr8,chr9,chr21	chr11,chr20
+fold3	chr1,chr11,chr20	chr2,chr19
+fold4	chr2,chr3,chr19	chr4,chr18
+fold5	chr4,chr5,chr18,chr22	chr6,chr16
+fold6	chr6,chr7,chr12,chr13	chr14,chr15
+fold7	chr14,chr15,chr16,chrX	chr10,chr17
